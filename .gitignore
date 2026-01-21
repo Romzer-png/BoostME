@@ -1,0 +1,11 @@
+# Environnement virtuel
+.venv/
+
+# Fichiers secrets
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Python
+__pycache__/
