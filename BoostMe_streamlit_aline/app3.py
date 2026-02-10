@@ -104,17 +104,22 @@ def inject_css():
 inject_css()
 
 # =============================
-# LOGO
+# PATHS (robustes Streamlit Cloud)
 # =============================
-LOGO_PATH = Path("LOGO_BoostMe.png")
+BASE_DIR = Path(__file__).resolve().parent                 # .../BoostMe_streamlit_aline
+DATA_DIR = BASE_DIR / "data"                               # .../BoostMe_streamlit_aline/data
+LOGO_PATH = BASE_DIR / "LOGO_BoostMe.png"                  # .../BoostMe_streamlit_aline/LOGO_BoostMe.png
 
+# =============================
+# HEADER
+# =============================
 def show_header():
     left, right = st.columns([1, 3], vertical_alignment="center")
     with left:
         if LOGO_PATH.exists():
             st.image(str(LOGO_PATH), width=170)
         else:
-            st.warning("Logo non trouvé : mets ton fichier dans assets/LOGO_BoostMe.png")
+            st.warning("Logo non trouvé : vérifie le nom et l'emplacement (BoostMe_streamlit_aline/LOGO_BoostMe.png)")
     with right:
         st.markdown(
             f"""
@@ -137,13 +142,21 @@ def show_header():
 # =============================
 @st.cache_data
 def load_data():
-    base_dir = Path(__file__).resolve().parent        # .../BoostMe_streamlit_aline
-    data_dir = base_dir / "data"                      # .../BoostMe_streamlit_aline/data
+    # Check files exist to get a clean error message
+    missing = []
+    for f in ["cats.csv", "chaines.csv", "videos.csv"]:
+        if not (DATA_DIR / f).exists():
+            missing.append(str(DATA_DIR / f))
 
-    cats = pd.read_csv(data_dir / "cats.csv")
-    chaines = pd.read_csv(data_dir / "chaines.csv")
-    videos = pd.read_csv(data_dir / "videos.csv")
+    if missing:
+        st.error("Fichiers manquants (chemin introuvable sur le serveur) :")
+        for m in missing:
+            st.write("—", m)
+        st.stop()
 
+    cats = pd.read_csv(DATA_DIR / "cats.csv")
+    chaines = pd.read_csv(DATA_DIR / "chaines.csv")
+    videos = pd.read_csv(DATA_DIR / "videos.csv")
     return cats, chaines, videos
 
 # =============================
@@ -161,6 +174,9 @@ def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
         .str.replace("%", "pct", regex=False)
     )
     return df
+
+# ✅ IMPORTANT : on charge d’abord les données, puis on nettoie
+cats, chaines, videos = load_data()
 
 cats = clean_columns(cats)
 chaines = clean_columns(chaines)
@@ -214,17 +230,52 @@ videos["engagement_total"] = videos["likes"].fillna(0) + videos["comments"].fill
 # 5) JOINS
 # =============================
 # Videos ↔ Cats
+# sécurise au cas où category_id / name ont des noms différents
+if "category_id" not in cats.columns:
+    st.error("La colonne 'category_id' est introuvable dans cats.")
+    st.write("Colonnes cats :", list(cats.columns))
+    st.stop()
+
+name_col = "name" if "name" in cats.columns else None
+if name_col is None:
+    st.error("La colonne 'name' est introuvable dans cats.")
+    st.write("Colonnes cats :", list(cats.columns))
+    st.stop()
+
+if "category_id" not in videos.columns:
+    st.error("La colonne 'category_id' est introuvable dans videos.")
+    st.write("Colonnes videos :", list(videos.columns))
+    st.stop()
+
 videos = videos.merge(
-    cats[["category_id", "name"]],
+    cats[["category_id", name_col]],
     on="category_id",
     how="left"
-).rename(columns={"name": "categorie"})
+).rename(columns={name_col: "categorie"})
 
 # Videos ↔ Chaines (avoid "title" conflict)
-chaines_for_merge = chaines.rename(columns={"title": "chaine"})
+if "title" in chaines.columns:
+    chaines_for_merge = chaines.rename(columns={"title": "chaine"})
+else:
+    chaines_for_merge = chaines.copy()
+    if "chaine" not in chaines_for_merge.columns:
+        st.error("Je ne trouve ni 'title' ni 'chaine' dans chaines.")
+        st.write("Colonnes chaines :", list(chaines.columns))
+        st.stop()
 
+if "channel_id" not in videos.columns:
+    st.error("La colonne 'channel_id' est introuvable dans videos.")
+    st.write("Colonnes videos :", list(videos.columns))
+    st.stop()
+
+if "id" not in chaines_for_merge.columns:
+    st.error("La colonne 'id' est introuvable dans chaines.")
+    st.write("Colonnes chaines :", list(chaines.columns))
+    st.stop()
+
+merge_cols = [c for c in ["id", "chaine", "country", "subscribers", "engagement_rate_pct", "nb_videos"] if c in chaines_for_merge.columns]
 videos = videos.merge(
-    chaines_for_merge[["id", "chaine", "country", "subscribers", "engagement_rate_pct", "nb_videos"]],
+    chaines_for_merge[merge_cols],
     left_on="channel_id",
     right_on="id",
     how="left",
@@ -252,8 +303,8 @@ categories = st.sidebar.multiselect(
 
 chaines_sel = st.sidebar.multiselect(
     "Chaînes",
-    sorted(videos["chaine"].dropna().unique()),
-    default=sorted(videos["chaine"].dropna().unique())
+    sorted(videos["chaine"].dropna().unique()) if "chaine" in videos.columns else [],
+    default=sorted(videos["chaine"].dropna().unique()) if "chaine" in videos.columns else []
 )
 
 jours_sel = st.sidebar.multiselect(
@@ -297,13 +348,13 @@ k1, k2, k3, k4 = st.columns(4)
 with k1:
     kpi_card("📹 Vidéos analysées", f"{len(df):,}", BOOSTME["orange"])
 with k2:
-    v = f"{df['views'].mean():,.0f}" if len(df) else "0"
+    v = f"{df['views'].mean():,.0f}" if len(df) and "views" in df.columns else "0"
     kpi_card("👀 Vues moyennes / vidéo", v, BOOSTME["jaune"])
 with k3:
-    e = f"{df['taux_engagement_pct'].mean():.2f} %" if len(df) else "0"
+    e = f"{df['taux_engagement_pct'].mean():.2f} %" if len(df) and "taux_engagement_pct" in df.columns else "0"
     kpi_card("⚡ Engagement moyen", e, BOOSTME["rose"])
 with k4:
-    it = f"{df['engagement_total'].sum():,.0f}" if len(df) else "0"
+    it = f"{df['engagement_total'].sum():,.0f}" if len(df) and "engagement_total" in df.columns else "0"
     kpi_card("💬 Interactions totales", it, BOOSTME["violet"])
 
 st.markdown('<div class="bm-divider"></div>', unsafe_allow_html=True)
@@ -314,107 +365,119 @@ st.markdown('<div class="bm-divider"></div>', unsafe_allow_html=True)
 
 # A) Views by category
 st.subheader("📊 Moyenne de vues par catégorie")
-cat_views = (
-    df.groupby("categorie", as_index=False)["views"]
-    .mean()
-    .sort_values("views", ascending=False)
-)
+if "categorie" in df.columns and "views" in df.columns:
+    cat_views = (
+        df.groupby("categorie", as_index=False)["views"]
+        .mean()
+        .sort_values("views", ascending=False)
+    )
 
-fig_cat = px.bar(
-    cat_views,
-    x="categorie",
-    y="views",
-    title=None
-)
-fig_cat.update_traces(marker_color=BOOSTME["orange"])
-fig_cat.update_layout(
-    paper_bgcolor=BOOSTME["card"],
-    plot_bgcolor=BOOSTME["card"],
-    font_color=BOOSTME["text"],
-    xaxis_title=None,
-    yaxis_title="Vues moyennes",
-    margin=dict(l=10, r=10, t=10, b=10),
-)
-st.plotly_chart(fig_cat, use_container_width=True)
+    fig_cat = px.bar(
+        cat_views,
+        x="categorie",
+        y="views",
+        title=None
+    )
+    fig_cat.update_traces(marker_color=BOOSTME["orange"])
+    fig_cat.update_layout(
+        paper_bgcolor=BOOSTME["card"],
+        plot_bgcolor=BOOSTME["card"],
+        font_color=BOOSTME["text"],
+        xaxis_title=None,
+        yaxis_title="Vues moyennes",
+        margin=dict(l=10, r=10, t=10, b=10),
+    )
+    st.plotly_chart(fig_cat, use_container_width=True)
+else:
+    st.info("Colonnes manquantes pour afficher le graphe par catégorie (categorie/views).")
 
 # B) Engagement by hour
 st.subheader("⏰ Engagement moyen par heure")
-hour_eng = (
-    df.groupby("heure_publication", as_index=False)["taux_engagement_pct"]
-    .mean()
-    .sort_values("heure_publication")
-)
+if "heure_publication" in df.columns and "taux_engagement_pct" in df.columns:
+    hour_eng = (
+        df.groupby("heure_publication", as_index=False)["taux_engagement_pct"]
+        .mean()
+        .sort_values("heure_publication")
+    )
 
-fig_hour = px.line(
-    hour_eng,
-    x="heure_publication",
-    y="taux_engagement_pct",
-    markers=True,
-    title=None
-)
-fig_hour.update_traces(line_color=BOOSTME["violet"])
-fig_hour.update_layout(
-    paper_bgcolor=BOOSTME["card"],
-    plot_bgcolor=BOOSTME["card"],
-    font_color=BOOSTME["text"],
-    xaxis_title="Heure",
-    yaxis_title="Taux d'engagement (%)",
-    margin=dict(l=10, r=10, t=10, b=10),
-)
-st.plotly_chart(fig_hour, use_container_width=True)
+    fig_hour = px.line(
+        hour_eng,
+        x="heure_publication",
+        y="taux_engagement_pct",
+        markers=True,
+        title=None
+    )
+    fig_hour.update_traces(line_color=BOOSTME["violet"])
+    fig_hour.update_layout(
+        paper_bgcolor=BOOSTME["card"],
+        plot_bgcolor=BOOSTME["card"],
+        font_color=BOOSTME["text"],
+        xaxis_title="Heure",
+        yaxis_title="Taux d'engagement (%)",
+        margin=dict(l=10, r=10, t=10, b=10),
+    )
+    st.plotly_chart(fig_hour, use_container_width=True)
+else:
+    st.info("Colonnes manquantes pour afficher l'engagement par heure.")
 
 # C) Engagement by weekday
 st.subheader("📅 Engagement moyen par jour")
-day_eng = (
-    df.groupby("jour_semaine", as_index=False)["taux_engagement_pct"]
-    .mean()
-    .sort_values("jour_semaine")
-)
+if "jour_semaine" in df.columns and "taux_engagement_pct" in df.columns:
+    day_eng = (
+        df.groupby("jour_semaine", as_index=False)["taux_engagement_pct"]
+        .mean()
+        .sort_values("jour_semaine")
+    )
 
-fig_day = px.line(
-    day_eng,
-    x="jour_semaine",
-    y="taux_engagement_pct",
-    markers=True,
-    title=None
-)
-fig_day.update_traces(line_color=BOOSTME["rose"])
-fig_day.update_layout(
-    paper_bgcolor=BOOSTME["card"],
-    plot_bgcolor=BOOSTME["card"],
-    font_color=BOOSTME["text"],
-    xaxis_title=None,
-    yaxis_title="Taux d'engagement (%)",
-    margin=dict(l=10, r=10, t=10, b=10),
-)
-st.plotly_chart(fig_day, use_container_width=True)
+    fig_day = px.line(
+        day_eng,
+        x="jour_semaine",
+        y="taux_engagement_pct",
+        markers=True,
+        title=None
+    )
+    fig_day.update_traces(line_color=BOOSTME["rose"])
+    fig_day.update_layout(
+        paper_bgcolor=BOOSTME["card"],
+        plot_bgcolor=BOOSTME["card"],
+        font_color=BOOSTME["text"],
+        xaxis_title=None,
+        yaxis_title="Taux d'engagement (%)",
+        margin=dict(l=10, r=10, t=10, b=10),
+    )
+    st.plotly_chart(fig_day, use_container_width=True)
+else:
+    st.info("Colonnes manquantes pour afficher l'engagement par jour.")
 
 # D) Top channels by interactions
 st.subheader("🏆 Top chaînes (interactions)")
-top_chaines = (
-    df.groupby("chaine", as_index=False)["engagement_total"]
-    .sum()
-    .sort_values("engagement_total", ascending=False)
-    .head(15)
-)
+if "chaine" in df.columns and "engagement_total" in df.columns:
+    top_chaines = (
+        df.groupby("chaine", as_index=False)["engagement_total"]
+        .sum()
+        .sort_values("engagement_total", ascending=False)
+        .head(15)
+    )
 
-fig_top = px.bar(
-    top_chaines,
-    x="engagement_total",
-    y="chaine",
-    orientation="h",
-    title=None
-)
-fig_top.update_traces(marker_color=BOOSTME["jaune"])
-fig_top.update_layout(
-    paper_bgcolor=BOOSTME["card"],
-    plot_bgcolor=BOOSTME["card"],
-    font_color=BOOSTME["text"],
-    xaxis_title="Interactions",
-    yaxis_title=None,
-    margin=dict(l=10, r=10, t=10, b=10),
-)
-st.plotly_chart(fig_top, use_container_width=True)
+    fig_top = px.bar(
+        top_chaines,
+        x="engagement_total",
+        y="chaine",
+        orientation="h",
+        title=None
+    )
+    fig_top.update_traces(marker_color=BOOSTME["jaune"])
+    fig_top.update_layout(
+        paper_bgcolor=BOOSTME["card"],
+        plot_bgcolor=BOOSTME["card"],
+        font_color=BOOSTME["text"],
+        xaxis_title="Interactions",
+        yaxis_title=None,
+        margin=dict(l=10, r=10, t=10, b=10),
+    )
+    st.plotly_chart(fig_top, use_container_width=True)
+else:
+    st.info("Colonnes manquantes pour afficher le top chaînes.")
 
 # =============================
 # TABLE
@@ -426,9 +489,14 @@ with st.expander("🔎 Explorer les données filtrées"):
 # DEBUG (optional)
 # =============================
 with st.expander("🛠️ Debug (colonnes)"):
+    st.write("Chemin base :", str(BASE_DIR))
+    st.write("Chemin data :", str(DATA_DIR))
+    st.write("Fichiers data :", [p.name for p in DATA_DIR.glob("*.csv")] if DATA_DIR.exists() else "DATA_DIR introuvable")
     st.write("Colonnes cats :", list(cats.columns))
     st.write("Colonnes chaines :", list(chaines.columns))
     st.write("Colonnes videos :", list(videos.columns))
     cols_preview = [c for c in ["title", "chaine", "categorie", "views", "taux_engagement_pct"] if c in videos.columns]
     st.dataframe(videos[cols_preview].head(10), use_container_width=True)
+
+
 
